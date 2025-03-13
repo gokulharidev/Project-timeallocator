@@ -18,12 +18,14 @@ google-resumable-media==2.7.2
 googleapis-common-protos==1.69.1
 grpcio==1.71.0
 grpcio-status==1.71.0
+gunicorn==23.0.0
 httplib2==0.22.0
 idna==3.10
 immutabledict==4.2.1
 msgpack==1.1.0
 numpy==2.2.3
 ortools==9.12.4544
+packaging==24.2
 pandas==2.2.3
 proto-plus==1.26.1
 protobuf==5.29.3
