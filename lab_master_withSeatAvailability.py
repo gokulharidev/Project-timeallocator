@@ -12,7 +12,7 @@ class LabTimetableScheduler:
             classes (list of tuples): Each tuple is (year, subject, required_count).
                 For example: [("1st Year", "C++", 5), ("2nd Year", ".NET", 5), ...]
         """
-        self.classes = classes
+        self.classes = classes  
         # labs will be loaded from Firebase, so we initialize it as an empty list.
         self.labs = []
         self.days = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6"]
@@ -36,10 +36,12 @@ class LabTimetableScheduler:
         # Initialize Firebase only if not already initialized.
         if not firebase_admin._apps:
             # Update the path and URL below with your Firebase project details.
-            cred = credentials.Certificate("path/to/serviceAccountKey.json")
+            cred = credentials.Certificate("serviceAccountKey.json")  # Make sure the file is in the same directory
             firebase_admin.initialize_app(cred, {
-                'databaseURL': 'https://your-database-url.firebaseio.com/'
-            })
+            'databaseURL': 'https://stim-80b38-default-rtdb.firebaseio.com/'  # Replace with your actual database URL
+})
+
+        
         
         labs_ref = db.reference('labs')
         labs_data = labs_ref.get()
@@ -145,23 +147,4 @@ class LabTimetableScheduler:
                 writer.writerow(row)
         print(f"Timetable saved to {filename}")
 
-# Example usage:
-if __name__ == "__main__":
-    # Instead of hard-coded labs, they will be loaded from Firebase.
-    classes = [
-        ("1st Year", "C++", 5),
-        ("2nd Year", "Linux", 2),
-        ("2nd Year", ".NET", 5),
-        ("3rd Year", "Python", 4),
-        ("3rd Year", "Web", 6)
-    ]
-    scheduler = LabTimetableScheduler(classes)
-    solution = scheduler.solve()
-    
-    if solution:
-        for day in solution:
-            print(f"{day}:")
-            for period in solution[day]:
-                print(f"  Period {period}: {solution[day][period]}")
-    else:
-        print("No solution found.")
+

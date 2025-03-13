@@ -162,4 +162,3 @@ class TimetableScheduler:
             return output_data
         else:
             return None
-

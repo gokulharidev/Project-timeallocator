@@ -8,6 +8,7 @@ classes = [
     ("2nd Year", ".NET", 5),
     ("3rd Year", "Python", 4),
     ("3rd Year", "Web", 6)
+
 ]
 
 labs = ["Lab 1", "Lab 2"]
@@ -54,6 +55,7 @@ if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
         writer.writerow(["Day/Period"] + [f"Period {p}" for p in periods])
         for day in days:
             row = [day]
+            
             for period in periods:
                 assigned = False
                 for cls in classes:

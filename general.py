@@ -38,7 +38,7 @@ class TimetableProcessor:
         except Exception as e:
             logging.error(f"Error loading '{self.csv_file}': {e}")
             return False
-
+        #firebase integration
     def populate_lab_sessions(self):
         """Assigns lab sessions from the timetable to the respective years."""
         for day_idx, day in enumerate(self.days):
