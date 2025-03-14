@@ -1,59 +1,101 @@
 from ortools.sat.python import cp_model
 import csv
 import firebase_admin
-from firebase_admin import credentials, db
+from firebase_admin import credentials, firestore
 
 class LabTimetableScheduler:
-    def __init__(self, classes):
+    def __init__(self, classes=None):
         """
         Initializes the scheduler with input data.
         
         Args:
             classes (list of tuples): Each tuple is (year, subject, required_count).
-                For example: [("1st Year", "C++", 5), ("2nd Year", ".NET", 5), ...]
+                If not provided, classes are loaded from Firestore.
         """
-        self.classes = classes  
-        # labs will be loaded from Firebase, so we initialize it as an empty list.
-        self.labs = []
+        # Initialize Firebase if not already done.
+        if not firebase_admin._apps:
+            cred = credentials.Certificate("serviceAccountKey.json")
+            firebase_admin.initialize_app(cred)
+        self.db = firestore.client()
+        
+        # Load classes from Firestore if not given.
+        if classes is None:
+            self.classes = self.load_classes_from_firestore()
+        else:
+            self.classes = classes
+        
+        self.labs = []             # List of lab names.
+        self.labs_data = {}        # Lab details (e.g. seat availability).
         self.days = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6"]
         self.periods = [1, 2, 3, 4, 5]
         
         self.model = cp_model.CpModel()
-        self.timetable = {}  # decision variables will be stored here
+        self.timetable = {}        # Decision variables.
         self.solver = cp_model.CpSolver()
+        self.solution = None       # Cache for the solved timetable.
+
+    def load_classes_from_firestore(self):
+        """
+        Loads class subjects from Firestore.
+        
+        Expected Firestore structure:
+        
+            Collection: timetableLAB_request
+                Document: classes
+                    Subcollection: <year>    e.g., "1st year", "2nd year", etc.
+                        Document: <section>   e.g., "A", "B", ...
+                            Subcollection: subjects
+                                Documents: e.g., "subject 1", "subject 2", ...
+        
+        Each subject document should include at least:
+            - "subject": a string (e.g., "C++")
+            - "required_count": an integer
+        
+        Returns:
+            A list of tuples (year, subject, required_count)
+        """
+        classes_list = []
+        classes_doc = self.db.collection("timetableLAB_request").document("classes")
+        # Iterate over subcollections for each year.
+        for year_col in classes_doc.collections():
+            year_name = year_col.id  # e.g., "1st year" (adjust casing as needed)
+            # For each year, iterate over its section documents.
+            for section_doc in year_col.list_documents():
+                # Optional: you can use section_doc.id if you want to differentiate sections.
+                # Now, get the "subjects" subcollection.
+                subjects_ref = section_doc.collection("subjects")
+                for subj_doc in subjects_ref.stream():
+                    subj_data = subj_doc.to_dict()
+                    subject_name = subj_data.get("subject")
+                    required_count = subj_data.get("required_count")
+                    if subject_name is not None and required_count is not None:
+                        # We ignore section details here and simply add the tuple.
+                        classes_list.append((year_name, subject_name, required_count))
+        return classes_list
 
     def load_lab_data_from_firebase(self):
         """
-        Initializes Firebase (if not already done) and fetches lab data.
-        Expects the lab data in the Firebase Realtime Database under the node "labs".
-        For example, the data structure could be:
+        Loads lab data from Firestore.
+        Expected structure in Firestore document 'lab_seatAvaliability' under the collection 
+        'timetableLAB_request':
             {
                 "Lab 1": { "seatAvailability": 30 },
                 "Lab 2": { "seatAvailability": 25 }
             }
-        This function sets self.labs to the list of lab names.
         """
-        # Initialize Firebase only if not already initialized.
-        if not firebase_admin._apps:
-            # Update the path and URL below with your Firebase project details.
-            cred = credentials.Certificate("serviceAccountKey.json")  # Make sure the file is in the same directory
-            firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://stim-80b38-default-rtdb.firebaseio.com/'  # Replace with your actual database URL
-})
-
-        
-        
-        labs_ref = db.reference('labs')
-        labs_data = labs_ref.get()
+        labs_ref = self.db.collection("timetableLAB_request").document("lab_seatAvaliability")
+        doc_snapshot = labs_ref.get()
+        if not doc_snapshot.exists:
+            raise ValueError("No lab data found in Firestore under 'timetableLAB_request/lab_seatAvaliability'.")
+        labs_data = doc_snapshot.to_dict()
         if labs_data is None:
-            raise ValueError("No lab data found in Firebase under the 'labs' node.")
-        # For now, we just take the keys (lab names).
+            raise ValueError("Lab document is empty or has no data.")
+        self.labs_data = labs_data
         self.labs = list(labs_data.keys())
         print("Fetched labs from Firebase:", self.labs)
 
     def build_model(self):
-        # Create decision variables.
-        # For every combination (day, period, lab, subject), create a Boolean variable.
+        # Create decision variables: one BoolVar for each (day, period, lab, subject)
         for day in self.days:
             for period in self.periods:
                 for lab in self.labs:
@@ -62,10 +104,8 @@ class LabTimetableScheduler:
                         var_name = f"{day}_{period}_{lab}_{subject}"
                         self.timetable[(day, period, lab, subject)] = self.model.NewBoolVar(var_name)
 
-        # Constraint 1: Each class must appear exactly its required number of times overall.
-        for cls in self.classes:
-            subject = cls[1]
-            required_count = cls[2]
+        # Constraint 1: Each class must appear exactly its required number of times.
+        for (year, subject, required_count) in self.classes:
             self.model.Add(
                 sum(
                     self.timetable[(day, period, lab, subject)]
@@ -75,10 +115,9 @@ class LabTimetableScheduler:
                 ) == required_count
             )
 
-        # Constraint 2: Each subject is placed at most once per day (summing over all labs and periods).
+        # Constraint 2: Each subject is placed at most once per day (across all labs and periods).
         for day in self.days:
-            for cls in self.classes:
-                subject = cls[1]
+            for (year, subject, _) in self.classes:
                 self.model.Add(
                     sum(
                         self.timetable[(day, period, lab, subject)]
@@ -98,14 +137,27 @@ class LabTimetableScheduler:
                         ) <= 1
                     )
 
+        # Constraint 4: Seat availability.
+        # If a class requires more seats than a lab has, force that assignment to 0.
+        for (year, subject, required_count) in self.classes:
+            for lab in self.labs:
+                lab_info = self.labs_data.get(lab, {})
+                lab_seats = lab_info.get("seatAvailability", 0)
+                if required_count > lab_seats:
+                    for day in self.days:
+                        for period in self.periods:
+                            self.model.Add(self.timetable[(day, period, lab, subject)] == 0)
+
     def solve(self):
-        # Load lab data from Firebase each time before building the model.
+        # Use cached solution if available.
+        if self.solution is not None:
+            return self.solution
+        
         self.load_lab_data_from_firebase()
         self.build_model()
         status = self.solver.Solve(self.model)
+        
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            # Construct solution as a nested dictionary:
-            # { day: { period: { lab: assignment } } }
             solution = {}
             for day in self.days:
                 solution[day] = {}
@@ -114,14 +166,15 @@ class LabTimetableScheduler:
                     for lab in self.labs:
                         assignment = "Empty"
                         for cls in self.classes:
-                            subject = cls[1]
+                            year, subject, _ = cls
                             if self.solver.Value(self.timetable[(day, period, lab, subject)]):
-                                # Format the output as "Year_Subject"
-                                assignment = f"{cls[0]}_{subject}"
+                                assignment = f"{year}_{subject}"
                                 break
                         solution[day][period][lab] = assignment
+            self.solution = solution
             return solution
         else:
+            self.solution = None
             return None
 
     def save_solution_to_csv(self, filename="timetable.csv"):
@@ -130,7 +183,6 @@ class LabTimetableScheduler:
             print("No solution found.")
             return
 
-        # Create header: first column is "Day/Period", then one column per lab-period combination.
         header = ["Day/Period"]
         for period in self.periods:
             for lab in self.labs:
@@ -145,6 +197,10 @@ class LabTimetableScheduler:
                     for lab in self.labs:
                         row.append(solution[day][period][lab])
                 writer.writerow(row)
+
         print(f"Timetable saved to {filename}")
 
-
+if __name__ == "__main__":
+    # If no classes list is provided, they are loaded from Firestore.
+    scheduler = LabTimetableScheduler()
+    scheduler.save_solution_to_csv()

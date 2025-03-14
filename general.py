@@ -2,9 +2,11 @@ import pandas as pd
 import os
 import random
 import logging
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 class TimetableProcessor:
-    def __init__(self, csv_file, years, candidates):
+    def __init__(self, candidates):
         """
         Initializes the processor with required inputs.
 
@@ -13,12 +15,17 @@ class TimetableProcessor:
             years (dict): Dictionary mapping year groups to their lab subjects.
             candidates (dict): Dictionary of subjects with required occurrences and teachers.
         """
-        self.csv_file = csv_file
+        cred=credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+        db=firestore.client()
+        years = db.collection("general_request").document("years_subject")
+        candidates = db.collection("general_request").document("candidate")
+        self.csv_file = "timetable.csv"
         self.years = years
         self.candidates = candidates
         self.year_data = {}
-        self.days = []
-        self.periods = []
+        self.days = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6"]
+        self.periods = [1, 2, 3, 4, 5]
         self.data = None
         
         # Set up logging
