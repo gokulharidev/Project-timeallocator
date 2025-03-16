@@ -8,7 +8,6 @@ classes = [
     ("2nd Year", ".NET", 5),
     ("3rd Year", "Python", 4),
     ("3rd Year", "Web", 6)
-
 ]
 
 labs = ["Lab 1", "Lab 2"]

@@ -34,7 +34,7 @@ candidates = {
 
 # === LOAD THE YEAR-WISE TIMETABLES (File 2 outputs) ===
 years_list = ["1st Year", "2nd Year", "3rd Year"]
-input_dir = "Yearly_Timetables"
+input_dir = "final_schedules"
 year_tables = {}
 for year in years_list:
     file_path = os.path.join(input_dir, f"{year.replace(' ', '_')}.csv")

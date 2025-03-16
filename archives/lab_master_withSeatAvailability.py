@@ -2,6 +2,7 @@ from ortools.sat.python import cp_model
 import csv
 import firebase_admin
 from firebase_admin import credentials, firestore
+import re
 
 class LabTimetableScheduler:
     def __init__(self, classes=None):
@@ -28,6 +29,7 @@ class LabTimetableScheduler:
         self.labs_data = {}        # Lab details (e.g. seat availability).
         self.days = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6"]
         self.periods = [1, 2, 3, 4, 5]
+        self.slot_map = {}         # Map to store slot assignments
         
         self.model = cp_model.CpModel()
         self.timetable = {}        # Decision variables.
@@ -73,6 +75,155 @@ class LabTimetableScheduler:
                         classes_list.append((year_name, subject_name, required_count))
         return classes_list
 
+    def load_slot_map_from_firestore(self):
+        """
+        Loads slot map data from Firestore.
+        
+        Expected format in Firestore:
+        Collection: timetableLAB_request
+            Document: slot
+                Fields: 
+                    slot1: "class : C++ Lab, sub_count:5, Year : 3"
+                    slot2: "..."
+                    slotN: "..."
+        
+        Returns:
+            Dictionary mapping slot names to parsed class info
+        """
+        slot_map = {}
+        # Corrected reference to 'slot' document instead of 'slot_map'
+        slot_ref = self.db.collection("timetableLAB_request").document("slot")
+        doc_snapshot = slot_ref.get()
+        
+        if not doc_snapshot.exists:
+            print("No slot data found in Firestore at /timetableLAB_request/slot")
+            return slot_map
+        
+        slot_data = doc_snapshot.to_dict()
+        if not slot_data:
+            print("Slot document exists but is empty.")
+            return slot_map
+        
+        print(f"Raw slot data from Firestore: {slot_data}")
+        
+        # Parse each slot entry (slot1, slot2, etc.)
+        for slot_name, slot_info_str in slot_data.items():
+            if not slot_name.startswith("slot"):
+                print(f"Warning: Unexpected field name in slot document: {slot_name}")
+                continue
+                
+            # Parse the slot info string using regex
+            class_match = re.search(r'class\s*:\s*([^,]+)', slot_info_str)
+            count_match = re.search(r'sub_count\s*:\s*(\d+)', slot_info_str)
+            year_match = re.search(r'Year\s*:\s*(\d+)', slot_info_str)
+            
+            if class_match and count_match and year_match:
+                class_name = class_match.group(1).strip()
+                sub_count = int(count_match.group(1))
+                year = year_match.group(1)
+                
+                slot_map[slot_name] = {
+                    'class': class_name,
+                    'sub_count': sub_count,
+                    'year': year
+                }
+            else:
+                print(f"Warning: Could not parse slot info for {slot_name}: {slot_info_str}")
+        
+        return slot_map
+
+    def export_slot_map_to_csv(self, filename="slot_map.csv"):
+        """
+        Exports the slot map data from Firestore to a CSV file.
+        
+        Args:
+            filename (str): The name of the CSV file to create.
+        """
+        slot_map = self.load_slot_map_from_firestore()
+        
+        if not slot_map:
+            print("No slot map data to export.")
+            return
+        
+        # Define CSV fields
+        fieldnames = ["slot", "class", "sub_count", "year"]
+        
+        # Write to CSV
+        with open(filename, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for slot_name, info in slot_map.items():
+                writer.writerow({
+                    "slot": slot_name,
+                    "class": info.get("class", ""),
+                    "sub_count": info.get("sub_count", ""),
+                    "year": info.get("year", "")
+                })
+        
+        print(f"Successfully exported {len(slot_map)} slot mappings to {filename}")
+        return slot_map
+
+    def export_classes_to_csv(self, filename="classes_data.csv"):
+        """
+        Exports the classes data from Firestore to a CSV file.
+        
+        Args:
+            filename (str): The name of the CSV file to create.
+        """
+        classes_doc = self.db.collection("timetableLAB_request").document("classes")
+        all_classes = []
+        
+        # Iterate over subcollections for each year
+        for year_col in classes_doc.collections():
+            year_name = year_col.id
+            
+            # For each year, iterate over its section documents
+            for section_doc in year_col.list_documents():
+                section_id = section_doc.id
+                
+                # Get the "subjects" subcollection
+                subjects_ref = section_doc.collection("subjects")
+                
+                # Fetch all subjects in this section
+                for subject_doc in subjects_ref.stream():
+                    subject_data = subject_doc.to_dict()
+                    subject_id = subject_doc.id
+                    
+                    # Extract relevant fields
+                    subject_name = subject_data.get("subject", "Unknown")
+                    required_count = subject_data.get("required_count", 0)
+                    
+                    # Add to our data structure with all details
+                    all_classes.append({
+                        "year": year_name,
+                        "section": section_id,
+                        "subject_id": subject_id,
+                        "subject_name": subject_name,
+                        "required_count": required_count
+                    })
+        
+        if not all_classes:
+            print(f"No data found in Firestore path: /timetableLAB_request/classes")
+            return
+        
+        # Define the CSV field names (columns)
+        fieldnames = ["year", "section", "subject_id", "subject_name", "required_count"]
+        
+        # Write the data to a CSV file
+        with open(filename, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write the header
+            writer.writeheader()
+            
+            # Write all rows
+            for class_data in all_classes:
+                writer.writerow(class_data)
+        
+        print(f"Successfully exported {len(all_classes)} classes to {filename}")
+        return all_classes
+
     def load_lab_data_from_firebase(self):
         """
         Loads lab data from Firestore.
@@ -85,14 +236,32 @@ class LabTimetableScheduler:
         """
         labs_ref = self.db.collection("timetableLAB_request").document("lab_seatAvaliability")
         doc_snapshot = labs_ref.get()
+        
         if not doc_snapshot.exists:
             raise ValueError("No lab data found in Firestore under 'timetableLAB_request/lab_seatAvaliability'.")
+        
         labs_data = doc_snapshot.to_dict()
         if labs_data is None:
             raise ValueError("Lab document is empty or has no data.")
-        self.labs_data = labs_data
-        self.labs = list(labs_data.keys())
-        print("Fetched labs from Firebase:", self.labs)
+            
+        # Debug print to see what data is actually coming from Firestore
+        print("Raw lab data from Firestore:", labs_data)
+        
+        # Check if the document structure matches what we expect
+        valid_labs = {}
+        for lab_name, lab_info in labs_data.items():
+            if isinstance(lab_info, dict) and "seatAvailability" in lab_info:
+                valid_labs[lab_name] = lab_info
+            else:
+                print(f"Warning: Lab '{lab_name}' has invalid structure: {lab_info}")
+        
+        if not valid_labs:
+            raise ValueError("No valid lab data found. Expected structure: {'Lab name': {'seatAvailability': number}}")
+        
+        self.labs_data = valid_labs
+        self.labs = list(valid_labs.keys())
+        print("Processed labs:", self.labs)
+        print("With data:", self.labs_data)
 
     def build_model(self):
         # Create decision variables: one BoolVar for each (day, period, lab, subject)
@@ -203,4 +372,12 @@ class LabTimetableScheduler:
 if __name__ == "__main__":
     # If no classes list is provided, they are loaded from Firestore.
     scheduler = LabTimetableScheduler()
+    
+    # Export the classes data from Firestore to CSV
+    scheduler.export_classes_to_csv("class_data.csv")
+    
+    # Export the slot map data from Firestore to CSV
+    scheduler.export_slot_map_to_csv("slot_map.csv")
+    
+    # Still run the original timetable scheduling functionality
     scheduler.save_solution_to_csv()
